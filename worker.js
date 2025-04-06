@@ -1,17 +1,17 @@
-const GITHUB_API_URL = "https://api.github.com/repos/你的git用户名/你的项目名/contents/你的语料库文件名.txt";
-const GITHUB_TOKEN = "你的GitHub 访问令牌"; // GitHub 访问令牌
+const GITHUB_API_URL = "github_api";
+const GITHUB_TOKEN = "必填"; // GitHub 访问令牌
 
-const TOKEN = '你的bot-token'; // bot token
-const SECRET = '此处字母数字乱输'; // 随机密钥
-const SOURCE = 'https://你的git用户名.github.io/你的项目名/你的语料库文件名.txt'; // 远程语料库，从github中获取
-const ALLOWED_CHAT_ID = -123456; // ⚠️ 你的群组 ID
-const ALLOWED_USER_IDS = [987654321]; // ⚠️ 允许的用户 ID
-const ADMIN_PASSWORD = "123456"; // 管理员密码
+const TOKEN = '必填'; // bot token
+const SECRET = '必填'; // 随机密钥
+const SOURCE = '必填'; // 远程语料库
+const ALLOWED_CHAT_ID = -123456注意是负数; // ⚠️ 你的群组 ID
+const ALLOWED_USER_IDS = [绝对管理员]; // ⚠️ 允许的用户 ID
+const ADMIN_PASSWORD = "密码"; // 管理员密码
 let TEMPORARY_AUTHORIZED_USERS = []; // 临时授权用户
 
 // 默认语料，仅在无法从GitHub获取时使用
 let lines = ` 
-{S1E1}狞畜，死！~
+{S1E1}12,3！~
 {S1E2}测试字幕~
 `; 
 
@@ -20,8 +20,8 @@ let isDataLoaded = false;
 
 // 处理批量添加语料的命令
 let waitingForBatchInput = {}; // 记录哪些用户正在等待批量输入以及超时时间
-const BATCH_INPUT_TIMEOUT = 5 * 60 * 1000; // 5分钟超时时间（毫秒）
 
+const BATCH_INPUT_TIMEOUT = 5 * 60 * 1000; // 5分钟超时时间（毫秒）
 const WEBHOOK = '/endpoint';
 
 export default {
@@ -49,6 +49,20 @@ export default {
     }
   }
 };
+
+async function fetchWithTimeout(url, options, timeout = 10000) { // 限制为10秒
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeout);
+  
+  const response = await fetch(url, {
+    ...options,
+    signal: controller.signal
+  });
+  
+  clearTimeout(id);
+  return response;
+}
+
 
 // 从GitHub加载语料库
 async function loadLinesFromGitHub() {
@@ -88,6 +102,8 @@ async function loadLinesFromGitHub() {
 }
 
 async function handleWebhook(request) {
+  const startTime = Date.now();
+
   if (request.headers.get('X-Telegram-Bot-Api-Secret-Token') !== SECRET) {
     return new Response('Unauthorized', { status: 403 });
   }
@@ -95,8 +111,12 @@ async function handleWebhook(request) {
   const update = await request.json();
   await onUpdate(update);
 
+  const elapsed = Date.now() - startTime;
+  console.log(`🕒 处理时间: ${elapsed}ms`);
+
   return new Response('Ok');
 }
+
 
 async function onUpdate(update) {
   if ('message' in update) {
@@ -239,6 +259,26 @@ async function onMessage(message) {
     } else {
       return sendPlainText(chatId, "❌ 请提供有效的用户ID");
     }
+  }
+  if (text.startsWith('/remove_all_temp_users') && ALLOWED_USER_IDS.includes(userId)) {
+    const originalCount = TEMPORARY_AUTHORIZED_USERS.length;
+    
+    if (originalCount === 0) {
+      return sendPlainText(chatId, "⚠️ 当前没有临时授权用户。");
+    }
+    
+    // Clear the temporary authorized users array
+    TEMPORARY_AUTHORIZED_USERS = [];
+    
+    return sendPlainText(chatId, `✅ 已移除所有临时授权用户（共 ${originalCount} 个）。`);
+  }
+  if (text.startsWith('/list_temp_users') && ALLOWED_USER_IDS.includes(userId)) {
+    if (TEMPORARY_AUTHORIZED_USERS.length === 0) {
+      return sendPlainText(chatId, "📋 当前没有临时授权用户。");
+    }
+    
+    const userList = TEMPORARY_AUTHORIZED_USERS.join('\n• ');
+    return sendPlainText(chatId, `📋 当前临时授权用户列表（共 ${TEMPORARY_AUTHORIZED_USERS.length} 个）：\n\n• ${userList}`);
   }
   
   // 刷新语料库
@@ -505,40 +545,31 @@ async function updateGitHubFile(content) {
   console.log("🔄 正在获取 GitHub 文件信息...");
   
   try {
-    // 直接尝试创建/更新文件
     console.log("🔄 正在提交到 GitHub...");
     
-    const updateResponse = await fetch(GITHUB_API_URL, {
+    const updateResponse = await fetchWithTimeout(GITHUB_API_URL, {
       method: 'PUT',
       headers: {
         'Authorization': `token ${GITHUB_TOKEN}`,
         'Content-Type': 'application/json',
         'Accept': 'application/vnd.github.v3+json',
-        'User-Agent': 'Evil773-Bot' // 添加User-Agent头
+        'User-Agent': 'Evil773-Bot'
       },
       body: JSON.stringify({
         message: "更新语料库",
-        content: btoa(unescape(encodeURIComponent(content))), // Base64 编码，处理中文
-        sha: await getFileSha() // 获取当前文件的 SHA，如果是新文件则为 null
+        content: btoa(unescape(encodeURIComponent(content))),
+        sha: await getFileSha()
       })
-    });
-
-    const responseText = await updateResponse.text();
-    let responseData;
-    
-    try {
-      responseData = JSON.parse(responseText);
-    } catch (e) {
-      throw new Error(`GitHub 响应解析失败: ${responseText.slice(0, 100)}...`);
-    }
+    }, 60000); // 增加超时时间到60秒
 
     if (!updateResponse.ok) {
-      console.error("❌ GitHub 更新失败：", responseData);
-      throw new Error(responseData.message || `状态码: ${updateResponse.status}`);
+      const errorText = await updateResponse.text();
+      console.error("❌ GitHub 更新失败状态:", updateResponse.status, errorText);
+      throw new Error(`GitHub API 错误: ${updateResponse.status} - ${errorText.slice(0, 100)}`);
     }
 
     console.log("✅ GitHub 更新成功！");
-    return responseData;
+    return await updateResponse.json();
   } catch (error) {
     console.error("❌ GitHub 操作失败：", error);
     throw error;
@@ -777,131 +808,134 @@ async function onDocumentUpload(message) {
   const userId = message.from?.id;
   const document = message.document;
   
-  // Check user authorization
+  // 检查用户权限
   const isAuthorized = ALLOWED_CHAT_ID === chatId || ALLOWED_USER_IDS.includes(userId) || TEMPORARY_AUTHORIZED_USERS.includes(userId);
   
   if (!isAuthorized) {
     return sendPlainText(chatId, "❌ 你无权上传语料文件！");
   }
   
-  // Check if document is a text file
+  // 检查文件类型
   if (!document.file_name.toLowerCase().endsWith('.txt')) {
     return sendPlainText(chatId, "❌ 只支持上传.txt文本文件！");
   }
   
-  // Check file size (limit to 1MB)
-  if (document.file_size > 1024 * 1024) {
-    return sendPlainText(chatId, "❌ 文件过大！请保持文件大小在1MB以内。");
+  // 检查文件大小
+  if (document.file_size > 256 * 1024) { // 限制为 256KB
+    return sendPlainText(chatId, "❌ 文件过大！请保持在 256KB 以内。");
   }
   
-  // Notify user that processing has started
-  await sendPlainText(chatId, "⏳ 正在处理文件，请稍候...");
-  
   try {
-    // Get file path from Telegram
+    // 通知用户处理已开始
+    await sendPlainText(chatId, "⏳ 正在处理文件，请稍候...");
+    
+    // 获取文件路径
     const fileResponse = await fetch(apiUrl('getFile', { file_id: document.file_id }));
     const fileData = await fileResponse.json();
     
     if (!fileData.ok) {
-      throw new Error(`获取文件失败: ${fileData.description}`);
+      throw new Error(`获取文件失败: ${JSON.stringify(fileData)}`);
     }
     
-    // Download the file
+    // 下载文件
     const filePath = fileData.result.file_path;
     const fileUrl = `https://api.telegram.org/file/bot${TOKEN}/${filePath}`;
     const fileContentResponse = await fetch(fileUrl);
+    
+    if (!fileContentResponse.ok) {
+      throw new Error(`下载文件失败: ${fileContentResponse.status} ${fileContentResponse.statusText}`);
+    }
+    
     const fileContent = await fileContentResponse.text();
     
-    // Process the file content
-    const result = await processFileContent(fileContent);
+    // 确保文件内容不为空
+    if (!fileContent.trim()) {
+      return sendPlainText(chatId, "❌ 文件内容为空！");
+    }
     
-    // Update GitHub with new content
-    await updateGitHubFile(lines);
+    // 处理文件内容
+    const fileLines = fileContent.split('\n').filter(line => line.trim() !== '');
+    console.log(`处理文件中，共有 ${fileLines.length} 行内容`);
     
-    // Send report to user
-    return sendPlainText(chatId, result.message);
+    // 验证并过滤行
+    const invalidLines = [];
+    const validLines = [];
+    const duplicates = [];
+    
+    for (const line of fileLines) {
+      const match = line.match(/^\s*\{([^}]+)\}\s*([\s\S]+)$/);
+      if (!match) {
+        invalidLines.push(line);
+        continue;
+      }
+      
+      const category = match[1];
+      const text = match[2].trim();
+      
+      if (!text) {
+        invalidLines.push(line);
+        continue;
+      }
+      
+      // 检查重复
+      if (checkDuplicate(lines, category, text)) {
+        duplicates.push(line);
+        continue;
+      }
+      
+      validLines.push(line);
+    }
+    
+    if (validLines.length === 0) {
+      let message = "❌ 文件中没有可添加的有效语料！";
+      
+      if (invalidLines.length > 0) {
+        message += `\n\n⚠️ ${invalidLines.length} 行格式无效`;
+        if (invalidLines.length <= 5) {
+          message += "：\n" + invalidLines.slice(0, 5).join('\n');
+        }
+      }
+      
+      if (duplicates.length > 0) {
+        message += `\n\n⚠️ ${duplicates.length} 行重复`;
+        if (duplicates.length <= 5) {
+          message += "：\n" + duplicates.slice(0, 5).join('\n');
+        }
+      }
+      
+      return sendPlainText(chatId, message);
+    }
+    
+    // 添加有效行到语料库
+    lines += '\n' + validLines.join('\n');
+    
+    // 更新GitHub
+    try {
+      await updateGitHubFile(lines);
+      
+      let message = `✅ 成功从文件中添加 ${validLines.length} 条语料！`;
+      
+      if (invalidLines.length > 0) {
+        message += `\n\n⚠️ ${invalidLines.length} 行格式无效未被添加`;
+        if (invalidLines.length <= 3) {
+          message += "：\n" + invalidLines.slice(0, 3).join('\n');
+        }
+      }
+      
+      if (duplicates.length > 0) {
+        message += `\n\n⚠️ ${duplicates.length} 行重复未被添加`;
+        if (duplicates.length <= 3) {
+          message += "：\n" + duplicates.slice(0, 3).join('\n');
+        }
+      }
+      
+      return sendPlainText(chatId, message);
+    } catch (error) {
+      console.error("❌ GitHub 更新失败：", error);
+      return sendPlainText(chatId, `✅ 已添加 ${validLines.length} 条语料到本地，但 GitHub 更新失败：${error.message}`);
+    }
   } catch (error) {
     console.error("❌ 处理文件失败:", error);
     return sendPlainText(chatId, `❌ 处理文件失败: ${error.message}`);
   }
-}
-
-async function processFileContent(content) {
-  const fileLines = content.split('\n').filter(line => line.trim() !== '');
-  
-  // Validate and filter lines
-  const invalidLines = [];
-  const validLines = [];
-  const duplicates = [];
-  
-  for (const line of fileLines) {
-    const match = line.match(/^\s*\{([^}]+)\}\s*([\s\S]+)$/);
-    if (!match) {
-      invalidLines.push(line);
-      continue;
-    }
-    
-    const category = match[1];
-    const text = match[2].trim();
-    
-    if (!text) {
-      invalidLines.push(line);
-      continue;
-    }
-    
-    // Check for duplicates
-    if (checkDuplicate(lines, category, text)) {
-      duplicates.push(line);
-      continue;
-    }
-    
-    validLines.push(line);
-  }
-  
-  if (validLines.length === 0) {
-    let message = "❌ 文件中没有可添加的有效语料！";
-    
-    if (invalidLines.length > 0) {
-      message += `\n\n⚠️ ${invalidLines.length} 行格式无效`;
-      if (invalidLines.length <= 5) {
-        message += "：\n" + invalidLines.slice(0, 5).join('\n');
-      }
-    }
-    
-    if (duplicates.length > 0) {
-      message += `\n\n⚠️ ${duplicates.length} 行重复`;
-      if (duplicates.length <= 5) {
-        message += "：\n" + duplicates.slice(0, 5).join('\n');
-      }
-    }
-    
-    return {
-      success: false,
-      message: message
-    };
-  }
-  
-  // Add valid lines to corpus
-  lines += '\n' + validLines.join('\n');
-  
-  let message = `✅ 成功从文件中添加 ${validLines.length} 条语料！`;
-  
-  if (invalidLines.length > 0) {
-    message += `\n\n⚠️ ${invalidLines.length} 行格式无效未被添加`;
-    if (invalidLines.length <= 3) {
-      message += "：\n" + invalidLines.slice(0, 3).join('\n');
-    }
-  }
-  
-  if (duplicates.length > 0) {
-    message += `\n\n⚠️ ${duplicates.length} 行重复未被添加`;
-    if (duplicates.length <= 3) {
-      message += "：\n" + duplicates.slice(0, 3).join('\n');
-    }
-  }
-  
-  return {
-    success: true,
-    message: message
-  };
 }
